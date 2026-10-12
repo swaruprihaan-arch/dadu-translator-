@@ -22,12 +22,18 @@
   }
   .chip.on { background: #1f5eff; border-color: #1f5eff; color: #fff; }
   .chip small { display: block; font-size: 20px; font-weight: 400; opacity: .8; margin-top: 4px; }
-  #customTopic {
-    width: 100%; font-size: 28px; padding: 22px; border-radius: 18px;
-    border: 4px solid #c9c2b2; margin-top: 14px; display: none;
+  .big-input {
+    width: 100%; font-size: 32px; padding: 26px; border-radius: 20px;
+    border: 4px solid #c9c2b2; background: #fff; font-family: inherit;
   }
+  .big-input:focus { outline: none; border-color: #1f5eff; }
+  #frame {
+    position: fixed; inset: 0; border: 10px dashed #9a927f; pointer-events: none; z-index: 30;
+  }
+  body.dragging #frame { border-color: #1f5eff; border-style: solid; }
+  #keyBox { display: none; margin-bottom: 30px; }
   .drop {
-    margin-top: 40px; border: 6px dashed #9a927f; border-radius: 30px; background: #fff;
+    margin-top: 40px; border: none; border-radius: 30px; background: #fff;
     padding: 70px 20px; text-align: center; cursor: pointer; font-size: 36px; font-weight: 700;
   }
   .drop span { display: block; font-size: 24px; font-weight: 400; color: #666; margin-top: 10px; }
@@ -68,19 +74,20 @@
     display: none; align-items: center; justify-content: center; font-size: 72px; font-weight: 800;
     text-align: center; pointer-events: none;
   }
-  body.dragging #overlay { display: flex; }
+  body.dragging .drop { background: #1f5eff; color: #fff; }
+  body.dragging .drop span { color: #fff; }
 </style>
 </head>
 <body>
-<div id="overlay">Drop files anywhere</div>
+<div id="frame"></div>
 
 <main>
   <h1>Hindi → English</h1>
-  <p class="sub">Drop files or images anywhere on this page</p>
+  <p class="sub">Drop files or images anywhere on the screen</p>
+  <div id="keyBox"><div class="label">API key</div><input id="keyInput" class="big-input" type="password" placeholder="Paste your Anthropic API key (saved only in this browser)"></div>
 
   <div class="label">1. Topic</div>
-  <div class="row" id="topics"></div>
-  <input id="customTopic" placeholder="Type your topic…">
+  <input id="topic" class="big-input" placeholder="Type the topic (for example: medical report, wedding letter)…">
 
   <div class="label">2. Style</div>
   <div class="row">
@@ -114,25 +121,16 @@
 const CFG = window.TRANSLATOR_CONFIG || {};
 if (!CFG.apiKey) {
   CFG.apiKey = localStorage.getItem("anthropicKey") || "";
-  if (!CFG.apiKey) { CFG.apiKey = (prompt("Paste your Anthropic API key (saved only in this browser):") || "").trim(); if (CFG.apiKey) localStorage.setItem("anthropicKey", CFG.apiKey); }
+  if (!CFG.apiKey) {
+    document.getElementById("keyBox").style.display = "block";
+    document.getElementById("keyInput").addEventListener("input", e => {
+      CFG.apiKey = e.target.value.trim(); localStorage.setItem("anthropicKey", CFG.apiKey);
+    });
+  }
 }
-const TOPICS = ["General", "Medical", "Legal", "Religious", "School", "Letter", "Business", "Other…"];
-let topic = "General", style = "verbatim", files = [];
+let style = "verbatim", files = [];
 
 const $ = s => document.querySelector(s);
-const topicsEl = $("#topics");
-TOPICS.forEach((t, i) => {
-  const b = document.createElement("button");
-  b.className = "chip" + (i === 0 ? " on" : "");
-  b.textContent = t;
-  b.onclick = () => {
-    topic = t;
-    topicsEl.querySelectorAll(".chip").forEach(c => c.classList.toggle("on", c === b));
-    $("#customTopic").style.display = t === "Other…" ? "block" : "none";
-    if (t === "Other…") $("#customTopic").focus();
-  };
-  topicsEl.appendChild(b);
-});
 document.querySelectorAll("[data-style]").forEach(b => b.onclick = () => {
   style = b.dataset.style;
   document.querySelectorAll("[data-style]").forEach(c => c.classList.toggle("on", c === b));
@@ -178,9 +176,12 @@ function renderFiles() {
   $("#go").textContent = files.length ? `Translate ${files.length} file${files.length > 1 ? "s" : ""}` : "Translate";
 }
 
-function topicName() { return topic === "Other…" ? ($("#customTopic").value.trim() || "General") : topic; }
+function topicName() { return $("#topic").value.trim(); }
 
 $("#go").onclick = () => {
+  if (!$("#topic").value.trim()) { $("#topic").focus(); $("#topic").placeholder = "Please type a topic first"; $("#topic").style.borderColor = "#d92d20"; return; }
+  $("#topic").style.borderColor = "";
+  if (!CFG.apiKey) { $("#keyInput").focus(); return; }
   $("#confirmText").textContent = `${files.length} file${files.length > 1 ? "s" : ""} · Topic: ${topicName()} · ${style === "verbatim" ? "Verbatim" : "Not verbatim"}`;
   $("#confirm").style.display = "flex";
 };
