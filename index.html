@@ -75,10 +75,9 @@
     background: #15a34a; color: #fff; border-radius: 24px; text-decoration: none;
   }
   .dl:hover { background: #128a3f; }
+  .res.done { border-left: none; padding: 20px; }
+  .fname { text-align: center; font-size: 20px; color: #777; word-break: break-all; }
   .order { font-size: 22px; color: #555; margin-bottom: 18px; }
-  .preview { font-size: 24px; border-top: 2px solid #eee; padding-top: 16px; max-height: 600px; overflow: auto; }
-  .preview h2 { font-size: 34px; margin: 10px 0; } .preview h4 { font-size: 28px; margin: 18px 0 8px; }
-  .preview p { margin: 0 0 14px; }
   #overlay {
     position: fixed; inset: 0; background: rgba(31,94,255,.88); color: #fff; z-index: 40;
     display: none; align-items: center; justify-content: center; font-size: 72px; font-weight: 800;
@@ -267,7 +266,10 @@ ${styleRule()}
 
 ${FORMAT_RULES}
 
-After fetching, reply with ONLY the formatted English document — nothing before it (no "I'll fetch", no "Here is") and nothing after it. If the page cannot be fetched, reply with exactly: FETCH_FAILED`;
+Pick the PDF design theme that best fits the content, from: ${THEME_LIST}.
+
+After fetching, your reply must start with one line: THEME: <name>
+Then the formatted English document only — nothing before it (no "I'll fetch", no "Here is") and nothing after it. If the page cannot be fetched, reply with exactly: FETCH_FAILED`;
 }
 
 function buildPrompt(n) {
@@ -287,8 +289,11 @@ ${FORMAT_RULES}
 - Do not mention file numbers, page numbers, or page order in the document. Never use "Page 1", "Page 2" etc. as headings — merge all pages into ONE continuous document organized by topic, with real descriptive section headings.
 - Do not repeat the main title as a heading again.
 
-Your reply must start with exactly one line in this form, giving the correct order of the file numbers:
-ORDER: 3, 1, 2
+Pick the PDF design theme that best fits the topic and content, from: ${THEME_LIST}.
+
+Your reply must start with exactly these two lines:
+ORDER: 3, 1, 2   (the correct order of the file numbers)
+THEME: <name>
 Then a line with only ---
 Then the formatted English document, and nothing else.`;
 }
@@ -349,12 +354,41 @@ function pdfSafe(t) {
           .replace(/\u2026/g, "...").replace(/\u00A0/g, " ").replace(/[\u2022\u25CF]/g, "-").replace(/[^\x09\x0A\x0D\x20-\x7E\u00A1-\u00FF]/g, "");
 }
 
-function makePdf(md, subtitle) {
+const THEMES = {
+  classic:   { body: "times",     head: "times",     sub: "helvetica", accent: [128, 38, 28],  title: "left",   rule: "single", bullet: "dot",    desc: "history, culture, archaeology, literature, general study notes" },
+  education: { body: "times",     head: "helvetica", sub: "helvetica", accent: [88, 44, 150],  title: "left",   rule: "thick",  bullet: "square", desc: "school lessons, exam prep (UPSC etc.), textbooks, homework" },
+  medical:   { body: "helvetica", head: "helvetica", sub: "helvetica", accent: [0, 112, 120],  title: "left",   rule: "band",   bullet: "dot",    desc: "medical reports, prescriptions, health, hospital papers" },
+  legal:     { body: "times",     head: "times",     sub: "times",     accent: [22, 38, 82],   title: "center", rule: "double", bullet: "dash",   desc: "legal documents, court papers, contracts, property, affidavits, government notices" },
+  science:   { body: "helvetica", head: "helvetica", sub: "helvetica", accent: [20, 90, 200],  title: "left",   rule: "thick",  bullet: "square", desc: "science, maths, technology, engineering, agriculture" },
+  religious: { body: "times",     head: "times",     sub: "times",     accent: [190, 90, 10],  title: "center", rule: "orn",    bullet: "diamond",desc: "religion, scripture, spirituality, prayers, philosophy, mythology" },
+  letter:    { body: "times",     head: "times",     sub: "times",     accent: [110, 75, 45],  title: "left",   rule: "none",   bullet: "dash",   desc: "personal or family letters, diaries, stories, poems" },
+  business:  { body: "helvetica", head: "helvetica", sub: "helvetica", accent: [30, 95, 70],   title: "left",   rule: "band",   bullet: "square", desc: "business, finance, banking, invoices, office documents" },
+  news:      { body: "times",     head: "helvetica", sub: "helvetica", accent: [180, 20, 30],  title: "left",   rule: "thick",  bullet: "dot",    desc: "news articles, current affairs, blogs, magazine articles" }
+};
+const THEME_LIST = Object.entries(THEMES).map(([k, v]) => `${k} (${v.desc})`).join("; ");
+
+function parseHeader(raw) {
+  let order = [], theme = "classic", body = raw;
+  for (let k = 0; k < 4; k++) {
+    let m;
+    if ((m = body.match(/^\s*ORDER:\s*([^\n]*)\n/i))) { order = (m[1].match(/\d+/g) || []).map(Number); body = body.slice(m[0].length); continue; }
+    if ((m = body.match(/^\s*THEME:\s*([a-z]+)[^\n]*\n/i))) { if (THEMES[m[1].toLowerCase()]) theme = m[1].toLowerCase(); body = body.slice(m[0].length); continue; }
+    if ((m = body.match(/^\s*-{3,}\s*\n/))) { body = body.slice(m[0].length); continue; }
+    break;
+  }
+  const i = body.search(/^#\s/m);
+  if (i > 0 && i < 400) body = body.slice(i);
+  return { order, theme, body };
+}
+
+function makePdf(md, subtitle, themeName) {
+  const T = THEMES[themeName] || THEMES.classic;
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
   const M = 62, TOP = 60, BOTTOM = 70, maxW = W - 2 * M;
-  const MAROON = [128, 38, 28], INK = [28, 28, 28], GREY = [110, 110, 110];
+  const MAROON = T.accent, INK = [28, 28, 28], GREY = [110, 110, 110];
+  const BODY = T.body, BSIZE = T.body === "helvetica" ? 10.5 : 11.5;
   let y = TOP;
   const need = h => { if (y + h > H - BOTTOM) { doc.addPage(); y = TOP; } };
   const lines = md.split("\n");
@@ -364,7 +398,7 @@ function makePdf(md, subtitle) {
 
   // Word-wrapped rich text: **bold**, *italic*
   function rich(text, o) {
-    const font = o.font || "times", size = o.size || 11.5, lh = o.lh || size * 1.45, indent = o.indent || 0;
+    const font = o.font || BODY, size = o.size || BSIZE, lh = o.lh || size * 1.45, indent = o.indent || 0;
     const words = []; let pendSpace = false;
     const re = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*)/g;
     pdfSafe(text).split(re).forEach(seg => {
@@ -395,26 +429,44 @@ function makePdf(md, subtitle) {
   }
 
   // Title block
-  doc.setFont("times", "bold"); doc.setFontSize(26); doc.setTextColor(...INK);
-  doc.splitTextToSize(pdfSafe(title), maxW).forEach(t => { doc.text(t, M, y + 8); y += 30; });
-  if (subtitle) { doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(...GREY); doc.text(pdfSafe(subtitle), M, y - 4, { maxWidth: maxW }); y += 6; }
-  doc.setDrawColor(...MAROON); doc.setLineWidth(0.8); doc.line(M, y, W - M, y); y += 30;
+  const cx = T.title === "center", tx = cx ? W / 2 : M, al = { align: cx ? "center" : "left" };
+  if (T.rule === "band") { doc.setFillColor(...MAROON); doc.rect(0, 0, W, 14, "F"); y += 6; }
+  if (T.rule === "orn") { doc.setDrawColor(...MAROON); doc.setLineWidth(0.6); doc.line(W/2 - 70, y - 18, W/2 - 8, y - 18); doc.line(W/2 + 8, y - 18, W/2 + 70, y - 18); doc.setFillColor(...MAROON); doc.lines([[4,-4],[4,4],[-4,4],[-4,-4]], W/2 - 4, y - 18, [1,1], "F", true); }
+  doc.setFont(T.head, "bold"); doc.setFontSize(T.head === "helvetica" ? 23 : 26);
+  doc.setTextColor(...(T.rule === "none" || T.rule === "orn" || T.rule === "band" ? MAROON : INK));
+  doc.splitTextToSize(pdfSafe(title), maxW).forEach(t => { doc.text(t, tx, y + 8, al); y += 30; });
+  if (subtitle) { doc.setFont(T.sub, T.sub === "times" ? "italic" : "normal"); doc.setFontSize(9.5); doc.setTextColor(...GREY); doc.text(pdfSafe(subtitle), tx, y - 4, Object.assign({ maxWidth: maxW }, al)); y += 6; }
+  doc.setDrawColor(...MAROON);
+  if (T.rule === "single") { doc.setLineWidth(0.8); doc.line(M, y, W - M, y); }
+  else if (T.rule === "thick") { doc.setLineWidth(2.5); doc.line(M, y, W - M, y); }
+  else if (T.rule === "double") { doc.setLineWidth(1.2); doc.line(M, y, W - M, y); doc.setLineWidth(0.4); doc.line(M, y + 3.5, W - M, y + 3.5); }
+  else if (T.rule === "band") { doc.setLineWidth(0.6); doc.line(M, y, W - M, y); }
+  else if (T.rule === "orn") { doc.setLineWidth(0.6); doc.line(W/2 - 90, y, W/2 + 90, y); }
+  y += T.rule === "none" ? 14 : 30;
 
   lines.forEach(raw => {
     const line = raw.replace(/\s+$/, "");
     let m;
     if (!line.trim()) { y += 5; return; }
     if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) { need(16); doc.setDrawColor(200); doc.setLineWidth(0.5); doc.line(M, y, W - M, y); y += 14; return; }
-    if ((m = line.match(/^##\s+(.*)/)) && !/^###/.test(line)) { y += 10; need(40); rich(m[1].replace(/\*/g, ""), { font: "times", size: 17, bold: true, color: MAROON, lh: 24 }); y += 4; return; }
-    if ((m = line.match(/^#{1,6}\s+(.*)/))) { y += 6; need(34); rich(m[1].replace(/\*/g, ""), { font: "helvetica", size: 11.5, bold: true, color: INK, lh: 17 }); y += 2; return; }
+    if ((m = line.match(/^##\s+(.*)/)) && !/^###/.test(line)) { y += 10; need(40); if (T.rule === "band" || T.head === "helvetica") { rich(m[1].replace(/\*/g, ""), { font: T.head, size: 15, bold: true, color: MAROON, lh: 21 }); doc.setDrawColor(...MAROON); doc.setLineWidth(0.5); doc.line(M, y - 13, M + 60, y - 13); y += 6; }
+      else rich(m[1].replace(/\*/g, ""), { font: T.head, size: 17, bold: true, color: MAROON, lh: 24 });
+      y += 4; return; }
+    if ((m = line.match(/^#{1,6}\s+(.*)/))) { y += 6; need(34); rich(m[1].replace(/\*/g, ""), { font: T.head === "times" && T.title === "center" ? "times" : "helvetica", size: 11.5, bold: true, color: T.title === "center" ? MAROON : INK, lh: 17 }); y += 2; return; }
     if ((m = line.match(/^(\s*)[-*+\u2022]\s+(.*)/))) {
       const ind = 18 + Math.min(m[1].length, 8) * 5;
-      rich(m[2], { indent: ind, onFirstLine: yy => { doc.setFillColor(...INK); doc.circle(M + ind - 12, yy - 3.6, 1.6, "F"); } });
+      rich(m[2], { indent: ind, onFirstLine: yy => {
+        const bx = M + ind - 12, by = yy - 3.6; doc.setFillColor(...MAROON); doc.setDrawColor(...MAROON);
+        if (T.bullet === "square") doc.rect(bx - 1.8, by - 1.8, 3.6, 3.6, "F");
+        else if (T.bullet === "dash") { doc.setLineWidth(0.9); doc.line(bx - 3, by, bx + 3, by); }
+        else if (T.bullet === "diamond") doc.lines([[2.4,-2.4],[2.4,2.4],[-2.4,2.4],[-2.4,-2.4]], bx - 2.4, by, [1,1], "F", true);
+        else { doc.setFillColor(...INK); doc.circle(bx, by, 1.6, "F"); }
+      } });
       y += 3; return;
     }
     if ((m = line.match(/^(\s*)(\d+[.)])\s+(.*)/))) {
       const ind = 22 + Math.min(m[1].length, 8) * 5;
-      rich(m[3], { indent: ind, onFirstLine: yy => { doc.setFont("times", "normal"); doc.setFontSize(11.5); doc.setTextColor(...INK); doc.text(m[2], M + ind - 20, yy); } });
+      rich(m[3], { indent: ind, onFirstLine: yy => { doc.setFont(BODY, "bold"); doc.setFontSize(BSIZE); doc.setTextColor(...MAROON); doc.text(m[2], M + ind - 20, yy); doc.setTextColor(...INK); doc.setFont(BODY, "normal"); } });
       y += 3; return;
     }
     rich(line.replace(/^>\s?/, ""), {}); y += 4;
@@ -422,27 +474,12 @@ function makePdf(md, subtitle) {
 
   const n = doc.getNumberOfPages();
   for (let p = 1; p <= n; p++) {
-    doc.setPage(p); doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(...GREY);
+    doc.setPage(p); doc.setFont(T.sub, "normal"); doc.setFontSize(8.5); doc.setTextColor(...GREY);
+    if (T.rule === "band") { doc.setFillColor(...MAROON); doc.rect(0, H - 8, W, 8, "F"); }
     doc.text(pdfSafe(title), M, H - 34);
     doc.text(`Page ${p}`, W - M, H - 34, { align: "right" });
   }
   return doc.output("blob");
-}
-
-function mdToHtml(md) {
-  const esc = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
-  let html = "", list = null;
-  const close = () => { if (list) { html += `</${list}>`; list = null; } };
-  md.split("\n").forEach(l => {
-    let m;
-    if ((m = l.match(/^#\s+(.*)/))) { close(); html += `<h2>${esc(m[1])}</h2>`; }
-    else if ((m = l.match(/^#{2,}\s+(.*)/))) { close(); html += `<h4>${esc(m[1])}</h4>`; }
-    else if ((m = l.match(/^\s*[-*+]\s+(.*)/))) { if (list !== "ul") { close(); html += "<ul>"; list = "ul"; } html += `<li>${esc(m[1])}</li>`; }
-    else if ((m = l.match(/^\s*\d+[.)]\s+(.*)/))) { if (list !== "ol") { close(); html += "<ol>"; list = "ol"; } html += `<li>${esc(m[1])}</li>`; }
-    else if (/^-{3,}$/.test(l.trim())) { close(); html += "<hr>"; }
-    else if (l.trim()) { close(); html += `<p>${esc(l)}</p>`; }
-  });
-  close(); return html;
 }
 
 async function runAll() {
@@ -450,7 +487,7 @@ async function runAll() {
   const batch = files.slice(); files = []; renderFiles();
   const out = $("#results");
   const card = document.createElement("div"); card.className = "res wait";
-  card.innerHTML = `<h3>Translating ${batch.length} file${batch.length > 1 ? "s" : ""}…</h3><div class="txt">Reading the pages…</div>`;
+  card.innerHTML = `<h3>Translating ${batch.length} file${batch.length > 1 ? "s" : ""}…</h3><div class="txt">Please wait. Your PDF will appear here.</div>`;
   out.prepend(card);
   card.scrollIntoView({ behavior: "smooth" });
   try {
@@ -463,18 +500,11 @@ async function runAll() {
       else content.push({ type: "text", text: await f.text() });
     }
     content.push({ type: "text", text: buildPrompt(batch.length) });
-    const raw = await callClaude(content, t => {
-      const words = t.split(/\s+/).length;
-      card.querySelector(".txt").textContent = `Translating… ${words} words so far`;
-    });
-    let order = [], body = raw;
-    const m = raw.match(/^\s*ORDER:\s*([^\n]*)\n/i);
-    if (m) {
-      order = (m[1].match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= batch.length);
-      body = raw.slice(m[0].length).replace(/^\s*-{3,}\s*\n/, "");
-    }
+    const raw = await callClaude(content);
+    let { order, theme, body } = parseHeader(raw);
+    order = order.filter(n => n >= 1 && n <= batch.length);
     const sub = `English translation of Hindi ${batch.some(f => kind(f) === "image") ? "notes" : "text"}  |  Topic: ${topicName()}` + (order.length > 1 ? `  |  Page order used: ${order.join(", ")}` : "");
-    showResult(card, cleanDoc(body), order, batch, sub);
+    showResult(card, cleanDoc(body), sub, theme);
   } catch (e) { showError(card, e); }
 }
 
@@ -487,44 +517,30 @@ function showError(card, e) {
 async function runLink(url) {
   const out = $("#results");
   const card = document.createElement("div"); card.className = "res wait";
-  card.innerHTML = `<h3></h3><div class="txt">Opening the page…</div>`;
+  card.innerHTML = `<h3></h3><div class="txt">Please wait. Your PDF will appear here.</div>`;
   card.querySelector("h3").textContent = "Translating " + url;
   out.prepend(card); card.scrollIntoView({ behavior: "smooth" });
   try {
-    const raw = await callClaude([{ type: "text", text: linkPrompt(url) }], (t, fetched) => {
-      card.querySelector(".txt").textContent = fetched || t ? `Translating… ${t ? t.split(/\s+/).length : 0} words so far` : "Opening the page…";
-    }, [{ type: "web_fetch_20250910", name: "web_fetch", max_uses: 3, max_content_tokens: 60000 }]);
+    const raw = await callClaude([{ type: "text", text: linkPrompt(url) }], null, [{ type: "web_fetch_20250910", name: "web_fetch", max_uses: 3, max_content_tokens: 60000 }]);
     if (/FETCH_FAILED/.test(raw) && raw.length < 200) throw new Error("Could not open that link. Check it and try again.");
-    const i = raw.search(/^#\s/m);
-    const md = cleanDoc(i > 0 ? raw.slice(i) : raw);
+    const { theme, body } = parseHeader(raw);
+    const md = cleanDoc(body);
     if (!md) throw new Error("No content found on that page.");
-    showResult(card, md, [], [], "English translation of " + new URL(url).hostname.replace(/^www\./, ""));
+    showResult(card, md, "English translation of " + new URL(url).hostname.replace(/^www\./, ""), theme);
     $("#link").value = "";
   } catch (e) { showError(card, e); }
 }
 
-function showResult(card, md, order, batch, subtitle) {
-  {
-    const blob = makePdf(md, subtitle);
-    const url = URL.createObjectURL(blob);
-    const titleM = md.match(/^#\s+(.+)/m);
-    const fname = (titleM ? pdfSafe(titleM[1]).replace(/\*\*/g, "").replace(/[^\w\- ]+/g, "").trim().slice(0, 60) : "Translation") .replace(/\s+/g, "_") + "_English.pdf";
-    card.className = "res";
-    card.innerHTML = "";
-    const h = document.createElement("h3"); h.textContent = "Done ✓"; card.appendChild(h);
-    const a = document.createElement("a"); a.className = "dl"; a.href = url; a.download = fname; a.textContent = "⬇ Download English PDF"; card.appendChild(a);
-    if (order.length && batch.length > 1) {
-      const o = document.createElement("div"); o.className = "order";
-      o.textContent = "Page order found: " + order.map((n, i) => `${i + 1}. ${batch[n - 1].name}`).join("   ");
-      card.appendChild(o);
-    }
-    const prev = document.createElement("div"); prev.className = "preview"; prev.innerHTML = mdToHtml(md); card.appendChild(prev);
-    const acts = document.createElement("div"); acts.className = "acts";
-    const c = document.createElement("button"); c.textContent = "Copy text";
-    c.onclick = () => { navigator.clipboard.writeText(md.replace(/\*\*/g, "").replace(/^#+\s*/gm, "")); c.textContent = "Copied ✓"; setTimeout(() => c.textContent = "Copy text", 1500); };
-    acts.append(c); card.appendChild(acts);
-    a.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
+function showResult(card, md, subtitle, theme) {
+  const blob = makePdf(md, subtitle, theme);
+  const url = URL.createObjectURL(blob);
+  const titleM = md.match(/^#\s+(.+)/m);
+  const fname = (titleM ? pdfSafe(titleM[1]).replace(/[*_]/g, "").replace(/[^\w\- ]+/g, "").trim().slice(0, 60) : "Translation").replace(/\s+/g, "_") + "_English.pdf";
+  card.className = "res done"; card.innerHTML = "";
+  const a = document.createElement("a"); a.className = "dl"; a.href = url; a.download = fname; a.dataset.theme = theme || "";
+  a.textContent = "⬇ Download PDF"; card.appendChild(a);
+  const n = document.createElement("div"); n.className = "fname"; n.textContent = fname; card.appendChild(n);
+  a.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 </script>
 </body>
