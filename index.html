@@ -366,6 +366,7 @@ function mdToHtml(md) {
 }
 
 async function runAll() {
+  if (!CFG.apiKey) { $("#keyBox").style.display = "block"; $("#keyInput").focus(); return; }
   const batch = files.slice(); files = []; renderFiles();
   const out = $("#results");
   const card = document.createElement("div"); card.className = "res wait";
