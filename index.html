@@ -242,7 +242,9 @@ const FORMAT_RULES = `FORMAT the English so it is easy to read and understand:
 - Use "## " section headings where the content has natural sections.
 - Short clear paragraphs separated by a blank line.
 - Use "- " bullets or "1. " numbered lists for lists, steps, or items.
-- Use **bold** for key terms, names, dates, and amounts where helpful.
+- Use "### " for smaller sub-headings inside a section.
+- Use *italics* for Indian/Sanskrit terms, book titles and names of texts, and add a short English meaning in parentheses the first time a term appears, e.g. *Upanayana* (sacred-thread initiation).
+- Use **bold** sparingly for the most important names, dates, and amounts.
 - No tables, no code blocks, no emojis, no images, no links.
 
 STRICT RULES:
@@ -282,7 +284,8 @@ ${styleRule()}
 Read all Hindi (Devanagari) text, including handwriting. If a word is hard to read, use your best judgment from context and keep going silently.
 
 ${FORMAT_RULES}
-- Do not mention file numbers or page order in the document.
+- Do not mention file numbers, page numbers, or page order in the document. Never use "Page 1", "Page 2" etc. as headings — merge all pages into ONE continuous document organized by topic, with real descriptive section headings.
+- Do not repeat the main title as a heading again.
 
 Your reply must start with exactly one line in this form, giving the correct order of the file numbers:
 ORDER: 3, 1, 2
@@ -325,14 +328,19 @@ async function callClaude(content, onText, tools) {
 
 // Remove any notes/disclaimers and any Hindi characters that slip through
 function cleanDoc(md) {
+  let firstTitle = null;
   return md.split("\n").filter(l => {
+    if (/^#{1,6}\s*\**\s*(page|pg\.?|पृष्ठ)\s*\d+\s*\**\s*$/i.test(l.trim()) || /^\**\s*(page|pg\.?)\s*\d+\s*\**$/i.test(l.trim())) return false;
+    const hm = l.match(/^#{1,6}\s+(.*)/);
+    if (hm) { const h = hm[1].replace(/[*_]/g, "").trim().toLowerCase(); if (firstTitle === null) firstTitle = h; else if (h === firstTitle) return false; }
     const t = l.replace(/[*_>\[\]()#\s]/g, " ").trim();
     if (/^(note|notes|translator'?s? note|translation note|disclaimer|please note)\b/i.test(t)) return false;
     if (/(handwriting|legib|illegib|transcription may|may contain inaccurac|unclear)/i.test(t) && /(note|may|due to|some words)/i.test(t)) return false;
     return true;
   }).join("\n")
     .replace(/[\u0900-\u097F]+/g, "")
-    .replace(/\[(illegible|unclear)[^\]]*\]/gi, "")
+    .replace(/\[(?:unclear|illegible|uncertain)\s*:\s*([^\]]*)\]/gi, "$1")
+    .replace(/\[(?:unclear|illegible|uncertain|\?)[^\]]*\]/gi, "")
     .replace(/\n{3,}/g, "\n\n").trim();
 }
 
@@ -341,56 +349,82 @@ function pdfSafe(t) {
           .replace(/\u2026/g, "...").replace(/\u00A0/g, " ").replace(/[\u2022\u25CF]/g, "-").replace(/[^\x09\x0A\x0D\x20-\x7E\u00A1-\u00FF]/g, "");
 }
 
-function makePdf(md) {
+function makePdf(md, subtitle) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "pt", format: "a4" });
-  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 60, maxW = W - 2 * M;
-  let y = M;
-  const need = h => { if (y + h > H - M) { doc.addPage(); y = M; } };
-  // Write words with **bold** support and word-wrap
-  function rich(text, size, baseBold, indent, lineH) {
-    const words = [];
-    pdfSafe(text).split("**").forEach((seg, i) => {
-      const b = baseBold || i % 2 === 1;
-      seg.split(/(\s+)/).forEach(w => { if (w && !/^\s+$/.test(w)) words.push({ w, b }); });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  const M = 62, TOP = 60, BOTTOM = 70, maxW = W - 2 * M;
+  const MAROON = [128, 38, 28], INK = [28, 28, 28], GREY = [110, 110, 110];
+  let y = TOP;
+  const need = h => { if (y + h > H - BOTTOM) { doc.addPage(); y = TOP; } };
+  const lines = md.split("\n");
+  let title = "Translation";
+  const ti = lines.findIndex(l => /^#\s+/.test(l));
+  if (ti >= 0) { title = lines[ti].replace(/^#\s+/, "").replace(/[*_]/g, "").trim(); lines.splice(ti, 1); }
+
+  // Word-wrapped rich text: **bold**, *italic*
+  function rich(text, o) {
+    const font = o.font || "times", size = o.size || 11.5, lh = o.lh || size * 1.45, indent = o.indent || 0;
+    const words = []; let pendSpace = false;
+    const re = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*)/g;
+    pdfSafe(text).split(re).forEach(seg => {
+      if (!seg) return;
+      let st = o.bold ? "bold" : "normal";
+      if (/^\*\*.*\*\*$/.test(seg)) { seg = seg.slice(2, -2); st = "bold"; }
+      else if (/^\*.*\*$/.test(seg)) { seg = seg.slice(1, -1); st = st === "bold" ? "bolditalic" : "italic"; }
+      seg.split(/(\s+)/).forEach(w => {
+        if (!w) return;
+        if (/^\s+$/.test(w)) { pendSpace = true; return; }
+        words.push({ w, st, glue: words.length > 0 && !pendSpace }); pendSpace = false;
+      });
     });
-    doc.setFontSize(size);
-    let x = M + indent; need(lineH);
-    const space = () => { doc.setFont("helvetica", "normal"); return doc.getTextWidth(" "); };
-    words.forEach((o, idx) => {
-      doc.setFont("helvetica", o.b ? "bold" : "normal");
-      const ww = doc.getTextWidth(o.w);
-      if (x > M + indent && x + ww > M + maxW) { y += lineH; need(lineH); x = M + indent; }
-      doc.setFont("helvetica", o.b ? "bold" : "normal");
-      doc.text(o.w, x, y);
-      x += ww + space();
+    doc.setFontSize(size); doc.setTextColor(...(o.color || INK));
+    need(lh);
+    let x = M + indent, first = true;
+    if (o.onFirstLine) o.onFirstLine(y);
+    words.forEach(wd => {
+      doc.setFont(font, wd.st);
+      const ww = doc.getTextWidth(wd.w);
+      doc.setFont(font, "normal"); const sp = doc.getTextWidth(" ");
+      let xx = first ? x : (wd.glue ? x : x + sp);
+      if (!first && xx + ww > M + maxW) { y += lh; need(lh); xx = M + indent; }
+      doc.setFont(font, wd.st); doc.text(wd.w, xx, y);
+      x = xx + ww; first = false;
     });
-    y += lineH;
+    y += lh;
   }
-  md.split("\n").forEach(raw => {
+
+  // Title block
+  doc.setFont("times", "bold"); doc.setFontSize(26); doc.setTextColor(...INK);
+  doc.splitTextToSize(pdfSafe(title), maxW).forEach(t => { doc.text(t, M, y + 8); y += 30; });
+  if (subtitle) { doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(...GREY); doc.text(pdfSafe(subtitle), M, y - 4, { maxWidth: maxW }); y += 6; }
+  doc.setDrawColor(...MAROON); doc.setLineWidth(0.8); doc.line(M, y, W - M, y); y += 30;
+
+  lines.forEach(raw => {
     const line = raw.replace(/\s+$/, "");
     let m;
-    if (!line.trim()) { y += 8; return; }
-    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) { need(20); doc.setDrawColor(190); doc.line(M, y, W - M, y); y += 18; return; }
-    if ((m = line.match(/^#\s+(.*)/))) { need(40); doc.setTextColor(20, 40, 90); rich(m[1].replace(/\*\*/g, ""), 22, true, 0, 28); doc.setTextColor(0); y += 8; return; }
-    if ((m = line.match(/^##\s+(.*)/))) { y += 8; need(34); doc.setTextColor(20, 40, 90); rich(m[1].replace(/\*\*/g, ""), 16, true, 0, 22); doc.setTextColor(0); y += 4; return; }
-    if ((m = line.match(/^#{3,}\s+(.*)/))) { y += 4; need(28); rich(m[1].replace(/\*\*/g, ""), 13.5, true, 0, 19); return; }
-    if ((m = line.match(/^(\s*)[-*+]\s+(.*)/))) {
-      const ind = 16 + Math.min(m[1].length, 8) * 4; need(18);
-      doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.text("-", M + ind - 12, y);
-      rich(m[2], 12, false, ind, 17); y += 2; return;
+    if (!line.trim()) { y += 5; return; }
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) { need(16); doc.setDrawColor(200); doc.setLineWidth(0.5); doc.line(M, y, W - M, y); y += 14; return; }
+    if ((m = line.match(/^##\s+(.*)/)) && !/^###/.test(line)) { y += 10; need(40); rich(m[1].replace(/\*/g, ""), { font: "times", size: 17, bold: true, color: MAROON, lh: 24 }); y += 4; return; }
+    if ((m = line.match(/^#{1,6}\s+(.*)/))) { y += 6; need(34); rich(m[1].replace(/\*/g, ""), { font: "helvetica", size: 11.5, bold: true, color: INK, lh: 17 }); y += 2; return; }
+    if ((m = line.match(/^(\s*)[-*+\u2022]\s+(.*)/))) {
+      const ind = 18 + Math.min(m[1].length, 8) * 5;
+      rich(m[2], { indent: ind, onFirstLine: yy => { doc.setFillColor(...INK); doc.circle(M + ind - 12, yy - 3.6, 1.6, "F"); } });
+      y += 3; return;
     }
     if ((m = line.match(/^(\s*)(\d+[.)])\s+(.*)/))) {
-      const ind = 24 + Math.min(m[1].length, 8) * 4; need(18);
-      doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.text(m[2], M + ind - 22, y);
-      rich(m[3], 12, false, ind, 17); y += 2; return;
+      const ind = 22 + Math.min(m[1].length, 8) * 5;
+      rich(m[3], { indent: ind, onFirstLine: yy => { doc.setFont("times", "normal"); doc.setFontSize(11.5); doc.setTextColor(...INK); doc.text(m[2], M + ind - 20, yy); } });
+      y += 3; return;
     }
-    rich(line.replace(/^>\s?/, ""), 12, false, 0, 17); y += 2;
+    rich(line.replace(/^>\s?/, ""), {}); y += 4;
   });
+
   const n = doc.getNumberOfPages();
   for (let p = 1; p <= n; p++) {
-    doc.setPage(p); doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(140);
-    doc.text(`Page ${p} of ${n}`, W / 2, H - 28, { align: "center" });
+    doc.setPage(p); doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(...GREY);
+    doc.text(pdfSafe(title), M, H - 34);
+    doc.text(`Page ${p}`, W - M, H - 34, { align: "right" });
   }
   return doc.output("blob");
 }
@@ -439,7 +473,8 @@ async function runAll() {
       order = (m[1].match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= batch.length);
       body = raw.slice(m[0].length).replace(/^\s*-{3,}\s*\n/, "");
     }
-    showResult(card, cleanDoc(body), order, batch);
+    const sub = `English translation of Hindi ${batch.some(f => kind(f) === "image") ? "notes" : "text"}  |  Topic: ${topicName()}` + (order.length > 1 ? `  |  Page order used: ${order.join(", ")}` : "");
+    showResult(card, cleanDoc(body), order, batch, sub);
   } catch (e) { showError(card, e); }
 }
 
@@ -463,14 +498,14 @@ async function runLink(url) {
     const i = raw.search(/^#\s/m);
     const md = cleanDoc(i > 0 ? raw.slice(i) : raw);
     if (!md) throw new Error("No content found on that page.");
-    showResult(card, md, [], []);
+    showResult(card, md, [], [], "English translation of " + new URL(url).hostname.replace(/^www\./, ""));
     $("#link").value = "";
   } catch (e) { showError(card, e); }
 }
 
-function showResult(card, md, order, batch) {
+function showResult(card, md, order, batch, subtitle) {
   {
-    const blob = makePdf(md);
+    const blob = makePdf(md, subtitle);
     const url = URL.createObjectURL(blob);
     const titleM = md.match(/^#\s+(.+)/m);
     const fname = (titleM ? pdfSafe(titleM[1]).replace(/\*\*/g, "").replace(/[^\w\- ]+/g, "").trim().slice(0, 60) : "Translation") .replace(/\s+/g, "_") + "_English.pdf";
