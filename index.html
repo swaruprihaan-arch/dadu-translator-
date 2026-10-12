@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hindi → English Translator</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #f4f1ea; color: #1d1d1d; font-size: 26px; line-height: 1.4;
+    min-height: 100vh;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 40px 28px 120px; }
+  h1 { font-size: 64px; margin: 0 0 8px; text-align: center; }
+  .sub { text-align: center; font-size: 28px; color: #555; margin: 0 0 40px; }
+  .label { font-size: 32px; font-weight: 700; margin: 36px 0 14px; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .chip {
+    flex: 1 1 200px; font-size: 28px; padding: 26px 18px; border-radius: 20px;
+    border: 4px solid #c9c2b2; background: #fff; cursor: pointer; font-weight: 600;
+  }
+  .chip.on { background: #1f5eff; border-color: #1f5eff; color: #fff; }
+  .chip small { display: block; font-size: 20px; font-weight: 400; opacity: .8; margin-top: 4px; }
+  #customTopic {
+    width: 100%; font-size: 28px; padding: 22px; border-radius: 18px;
+    border: 4px solid #c9c2b2; margin-top: 14px; display: none;
+  }
+  .drop {
+    margin-top: 40px; border: 6px dashed #9a927f; border-radius: 30px; background: #fff;
+    padding: 70px 20px; text-align: center; cursor: pointer; font-size: 36px; font-weight: 700;
+  }
+  .drop span { display: block; font-size: 24px; font-weight: 400; color: #666; margin-top: 10px; }
+  #files { margin-top: 24px; }
+  .file {
+    display: flex; align-items: center; gap: 18px; background: #fff; border-radius: 18px;
+    padding: 16px 20px; margin-bottom: 12px; font-size: 26px;
+  }
+  .file img { width: 80px; height: 80px; object-fit: cover; border-radius: 10px; }
+  .file .ic { width: 80px; height: 80px; display: grid; place-items: center; font-size: 44px; background: #eee; border-radius: 10px; }
+  .file .nm { flex: 1; word-break: break-all; }
+  .file button { font-size: 26px; padding: 12px 22px; border-radius: 14px; border: none; background: #eee; cursor: pointer; }
+  #go {
+    width: 100%; margin-top: 30px; font-size: 44px; font-weight: 800; padding: 36px;
+    border: none; border-radius: 26px; background: #15a34a; color: #fff; cursor: pointer;
+  }
+  #go:disabled { background: #b8b8b8; cursor: not-allowed; }
+  #confirm {
+    position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none;
+    align-items: center; justify-content: center; z-index: 50; padding: 20px;
+  }
+  #confirm .box { background: #fff; border-radius: 28px; padding: 44px; max-width: 760px; width: 100%; text-align: center; }
+  #confirm h2 { font-size: 42px; margin: 0 0 18px; }
+  #confirm p { font-size: 28px; margin: 0 0 30px; }
+  #confirm .row button { flex: 1; font-size: 34px; font-weight: 800; padding: 28px; border-radius: 22px; border: none; cursor: pointer; }
+  #yes { background: #15a34a; color: #fff; }
+  #no { background: #e5e5e5; }
+  #results { margin-top: 44px; }
+  .res { background: #fff; border-radius: 22px; padding: 28px; margin-bottom: 24px; border-left: 12px solid #1f5eff; }
+  .res h3 { margin: 0 0 14px; font-size: 30px; word-break: break-all; }
+  .res .txt { white-space: pre-wrap; font-size: 28px; }
+  .res.err { border-left-color: #d92d20; }
+  .res.wait { border-left-color: #f5a400; }
+  .res .acts { margin-top: 18px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .res .acts button { font-size: 24px; padding: 14px 24px; border-radius: 14px; border: none; background: #eee; cursor: pointer; }
+  #overlay {
+    position: fixed; inset: 0; background: rgba(31,94,255,.88); color: #fff; z-index: 40;
+    display: none; align-items: center; justify-content: center; font-size: 72px; font-weight: 800;
+    text-align: center; pointer-events: none;
+  }
+  body.dragging #overlay { display: flex; }
+</style>
+</head>
+<body>
+<div id="overlay">Drop files anywhere</div>
+
+<main>
+  <h1>Hindi → English</h1>
+  <p class="sub">Drop files or images anywhere on this page</p>
+
+  <div class="label">1. Topic</div>
+  <div class="row" id="topics"></div>
+  <input id="customTopic" placeholder="Type your topic…">
+
+  <div class="label">2. Style</div>
+  <div class="row">
+    <button class="chip on" data-style="verbatim">Verbatim<small>Word-for-word, exact</small></button>
+    <button class="chip" data-style="natural">Not verbatim<small>Natural, easy English</small></button>
+  </div>
+
+  <div class="label">3. Files</div>
+  <div class="drop" id="pick">Click or drop files here<span>Images (JPG, PNG, WEBP, GIF), PDF, or text files — many at once</span></div>
+  <input type="file" id="input" multiple accept="image/*,.pdf,.txt,.md,.csv,.html,.json,text/*" hidden>
+  <div id="files"></div>
+
+  <button id="go" disabled>Translate</button>
+
+  <div id="results"></div>
+</main>
+
+<div id="confirm">
+  <div class="box">
+    <h2>Translate now?</h2>
+    <p id="confirmText"></p>
+    <div class="row">
+      <button id="no">Cancel</button>
+      <button id="yes">Yes, translate</button>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script>
+const CFG = window.TRANSLATOR_CONFIG || {};
+if (!CFG.apiKey) {
+  CFG.apiKey = localStorage.getItem("anthropicKey") || "";
+  if (!CFG.apiKey) { CFG.apiKey = (prompt("Paste your Anthropic API key (saved only in this browser):") || "").trim(); if (CFG.apiKey) localStorage.setItem("anthropicKey", CFG.apiKey); }
+}
+const TOPICS = ["General", "Medical", "Legal", "Religious", "School", "Letter", "Business", "Other…"];
+let topic = "General", style = "verbatim", files = [];
+
+const $ = s => document.querySelector(s);
+const topicsEl = $("#topics");
+TOPICS.forEach((t, i) => {
+  const b = document.createElement("button");
+  b.className = "chip" + (i === 0 ? " on" : "");
+  b.textContent = t;
+  b.onclick = () => {
+    topic = t;
+    topicsEl.querySelectorAll(".chip").forEach(c => c.classList.toggle("on", c === b));
+    $("#customTopic").style.display = t === "Other…" ? "block" : "none";
+    if (t === "Other…") $("#customTopic").focus();
+  };
+  topicsEl.appendChild(b);
+});
+document.querySelectorAll("[data-style]").forEach(b => b.onclick = () => {
+  style = b.dataset.style;
+  document.querySelectorAll("[data-style]").forEach(c => c.classList.toggle("on", c === b));
+});
+
+// Drop zone = entire window
+let depth = 0;
+window.addEventListener("dragenter", e => { e.preventDefault(); depth++; document.body.classList.add("dragging"); });
+window.addEventListener("dragleave", e => { e.preventDefault(); if (--depth <= 0) { depth = 0; document.body.classList.remove("dragging"); } });
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => {
+  e.preventDefault(); depth = 0; document.body.classList.remove("dragging");
+  addFiles(e.dataTransfer.files);
+});
+window.addEventListener("paste", e => { if (e.clipboardData.files.length) addFiles(e.clipboardData.files); });
+$("#pick").onclick = () => $("#input").click();
+$("#input").onchange = e => { addFiles(e.target.files); e.target.value = ""; };
+
+function kind(f) {
+  if (f.type.startsWith("image/")) return "image";
+  if (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) return "pdf";
+  if (f.type.startsWith("text/") || /\.(txt|md|csv|html?|json)$/i.test(f.name)) return "text";
+  return null;
+}
+function addFiles(list) {
+  for (const f of list) {
+    if (!kind(f)) { alert(`"${f.name}" is not supported. Use images, PDF, or text files.`); continue; }
+    files.push(f);
+  }
+  renderFiles();
+}
+function renderFiles() {
+  const el = $("#files"); el.innerHTML = "";
+  files.forEach((f, i) => {
+    const d = document.createElement("div"); d.className = "file";
+    if (kind(f) === "image") { const img = document.createElement("img"); img.src = URL.createObjectURL(f); d.appendChild(img); }
+    else { const ic = document.createElement("div"); ic.className = "ic"; ic.textContent = kind(f) === "pdf" ? "📄" : "📝"; d.appendChild(ic); }
+    const n = document.createElement("div"); n.className = "nm"; n.textContent = f.name; d.appendChild(n);
+    const x = document.createElement("button"); x.textContent = "Remove"; x.onclick = () => { files.splice(i, 1); renderFiles(); };
+    d.appendChild(x); el.appendChild(d);
+  });
+  $("#go").disabled = !files.length;
+  $("#go").textContent = files.length ? `Translate ${files.length} file${files.length > 1 ? "s" : ""}` : "Translate";
+}
+
+function topicName() { return topic === "Other…" ? ($("#customTopic").value.trim() || "General") : topic; }
+
+$("#go").onclick = () => {
+  $("#confirmText").textContent = `${files.length} file${files.length > 1 ? "s" : ""} · Topic: ${topicName()} · ${style === "verbatim" ? "Verbatim" : "Not verbatim"}`;
+  $("#confirm").style.display = "flex";
+};
+$("#no").onclick = () => $("#confirm").style.display = "none";
+$("#yes").onclick = () => { $("#confirm").style.display = "none"; runAll(); };
+
+const toB64 = f => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(r.result.split(",")[1]); r.onerror = bad; r.readAsDataURL(f); });
+
+function buildPrompt() {
+  const t = topicName();
+  const s = style === "verbatim"
+    ? "Translate VERBATIM: word-for-word and line-by-line, keeping the original structure, line breaks, numbering and every detail. Do not summarize, skip, or add anything."
+    : "Translate into natural, fluent, easy-to-read English. Keep the full meaning, but phrase it the way a native English speaker would.";
+  return `You are an expert Hindi-to-English translator. The topic of this material is: ${t}. Use correct ${t.toLowerCase()} terminology.\n${s}\nIf the content is an image or scan, read all Hindi (Devanagari) text in it, including handwriting. Text that is already English stays as-is. Output ONLY the English translation — no notes, no preamble. If there is no readable text, say "No text found."`;
+}
+
+async function translate(f) {
+  const k = kind(f); let block;
+  if (k === "image") {
+    let type = f.type; if (!["image/jpeg","image/png","image/gif","image/webp"].includes(type)) type = "image/jpeg";
+    block = { type: "image", source: { type: "base64", media_type: type, data: await toB64(f) } };
+  } else if (k === "pdf") {
+    block = { type: "document", source: { type: "base64", media_type: "application/pdf", data: await toB64(f) } };
+  } else {
+    block = { type: "text", text: "Text to translate:\n\n" + await f.text() };
+  }
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": CFG.apiKey, "anthropic-version": "2023-06-01",
+      "content-type": "application/json", "anthropic-dangerous-direct-browser-access": "true"
+    },
+    body: JSON.stringify({ model: CFG.model || "claude-sonnet-4-5", max_tokens: 8000,
+      messages: [{ role: "user", content: [block, { type: "text", text: buildPrompt() }] }] })
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error?.message || ("HTTP " + r.status));
+  return j.content.filter(c => c.type === "text").map(c => c.text).join("\n");
+}
+
+async function runAll() {
+  const batch = files.slice(); files = []; renderFiles();
+  const out = $("#results");
+  out.scrollIntoView({ behavior: "smooth" });
+  await Promise.all(batch.map(async f => {
+    const card = document.createElement("div"); card.className = "res wait";
+    card.innerHTML = `<h3></h3><div class="txt">Translating…</div>`;
+    card.querySelector("h3").textContent = f.name;
+    out.prepend(card);
+    try {
+      const text = await translate(f);
+      card.className = "res";
+      card.querySelector(".txt").textContent = text;
+      const a = document.createElement("div"); a.className = "acts";
+      const c = document.createElement("button"); c.textContent = "Copy";
+      c.onclick = () => { navigator.clipboard.writeText(text); c.textContent = "Copied ✓"; setTimeout(() => c.textContent = "Copy", 1500); };
+      const d = document.createElement("button"); d.textContent = "Download";
+      d.onclick = () => { const l = document.createElement("a"); l.href = URL.createObjectURL(new Blob([text], { type: "text/plain" })); l.download = f.name.replace(/\.[^.]+$/, "") + "_English.txt"; l.click(); };
+      a.append(c, d); card.appendChild(a);
+    } catch (e) {
+      card.className = "res err";
+      card.querySelector(".txt").textContent = "Error: " + e.message;
+    }
+  }));
+}
+</script>
+</body>
+</html>
