@@ -69,6 +69,7 @@
   .res.wait { border-left-color: #f5a400; }
   .res .acts { margin-top: 18px; display: flex; gap: 12px; flex-wrap: wrap; }
   .res .acts button { font-size: 24px; padding: 14px 24px; border-radius: 14px; border: none; background: #eee; cursor: pointer; }
+  .linkbtn { flex: 0 0 auto; font-size: 32px; font-weight: 800; padding: 0 34px; min-height: 96px; border: none; border-radius: 20px; background: #15a34a; color: #fff; cursor: pointer; }
   .dl {
     display: block; text-align: center; font-size: 40px; font-weight: 800; padding: 34px; margin: 10px 0 20px;
     background: #15a34a; color: #fff; border-radius: 24px; text-decoration: none;
@@ -104,7 +105,13 @@
     <button class="chip" data-style="natural">Not verbatim<small>Natural, easy English</small></button>
   </div>
 
-  <div class="label">3. Files</div>
+  <div class="label">3. Paste a link <small style="font-weight:400;color:#666">(no topic needed)</small></div>
+  <div class="row">
+    <input id="link" class="big-input" style="flex:1 1 500px" placeholder="https://…">
+    <button id="goLink" class="linkbtn">Translate link</button>
+  </div>
+
+  <div class="label">4. Or files <small style="font-weight:400;color:#666">(type a topic first)</small></div>
   <div class="drop" id="pick">Click or drop files here<span>Images (JPG, PNG, WEBP, GIF), PDF, or text files — many at once</span></div>
   <input type="file" id="input" multiple accept="image/*,.pdf,.txt,.md,.csv,.html,.json,text/*" hidden>
   <div id="files"></div>
@@ -196,7 +203,20 @@ $("#go").onclick = () => {
   $("#confirm").style.display = "flex";
 };
 $("#no").onclick = () => $("#confirm").style.display = "none";
-$("#yes").onclick = () => { $("#confirm").style.display = "none"; runAll(); };
+let pending = null;
+$("#yes").onclick = () => { $("#confirm").style.display = "none"; (pending || runAll)(); pending = null; };
+$("#no").addEventListener("click", () => pending = null);
+function normUrl(u) { u = u.trim(); if (u && !/^https?:\/\//i.test(u)) u = "https://" + u; try { const h = new URL(u).href; try { return decodeURI(h); } catch { return h; } } catch { return ""; } }
+$("#link").addEventListener("keydown", e => { if (e.key === "Enter") $("#goLink").click(); });
+$("#goLink").onclick = () => {
+  const url = normUrl($("#link").value);
+  if (!url) { $("#link").focus(); $("#link").style.borderColor = "#d92d20"; $("#link").placeholder = "Paste a link first"; return; }
+  $("#link").style.borderColor = "";
+  if (!CFG.apiKey) { $("#keyBox").style.display = "block"; $("#keyInput").focus(); return; }
+  $("#confirmText").textContent = `Link: ${url} · ${style === "verbatim" ? "Verbatim" : "Not verbatim"}`;
+  pending = () => runLink(url);
+  $("#confirm").style.display = "flex";
+};
 
 const toB64 = f => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(r.result.split(",")[1]); r.onerror = bad; r.readAsDataURL(f); });
 
@@ -217,6 +237,37 @@ async function imageBlock(f) {
   }
 }
 
+const FORMAT_RULES = `FORMAT the English so it is easy to read and understand:
+- A short title as "# Title" at the top.
+- Use "## " section headings where the content has natural sections.
+- Short clear paragraphs separated by a blank line.
+- Use "- " bullets or "1. " numbered lists for lists, steps, or items.
+- Use **bold** for key terms, names, dates, and amounts where helpful.
+- No tables, no code blocks, no emojis, no images, no links.
+
+STRICT RULES:
+- Output ONLY English. Never include any Hindi/Devanagari text or transliteration.
+- Do NOT add any notes, disclaimers, comments, or remarks about handwriting, legibility, accuracy, uncertainty, the translation, the source, or the website. No "Note:", no "[illegible]", no "[unclear]".`;
+
+function styleRule() {
+  return style === "verbatim"
+    ? "Translate VERBATIM: keep every sentence and detail, word-for-word in meaning. Do not summarize, shorten, skip, or add content."
+    : "Translate into natural, fluent, easy-to-read English. Keep the full meaning and every detail, but phrase it the way a native English speaker would.";
+}
+
+function linkPrompt(url) {
+  return `Use the web_fetch tool to fetch this page: ${url}
+
+It is probably in Hindi (if parts are already English, keep them in English). Figure out the topic yourself from the content and use correct terminology for it.
+Take ONLY the main article/content of the page. Ignore menus, ads, cookie banners, sign-up boxes, related-article lists, comments, footers, and share buttons.
+
+${styleRule()}
+
+${FORMAT_RULES}
+
+After fetching, reply with ONLY the formatted English document — nothing before it (no "I'll fetch", no "Here is") and nothing after it. If the page cannot be fetched, reply with exactly: FETCH_FAILED`;
+}
+
 function buildPrompt(n) {
   const t = topicName();
   const s = style === "verbatim"
@@ -226,21 +277,11 @@ function buildPrompt(n) {
 
 You were given ${n} file(s), labeled FILE 1 to FILE ${n}. They are pages or parts of the material and are probably NOT in the right order. Work out the correct reading order from page numbers, dates, headings, sentences that continue across pages, numbering, and context.
 
-${s}
+${styleRule()}
 
 Read all Hindi (Devanagari) text, including handwriting. If a word is hard to read, use your best judgment from context and keep going silently.
 
-FORMAT the English so it is easy to read and understand:
-- A short title as "# Title" at the top.
-- Use "## " section headings where the content has natural sections.
-- Short clear paragraphs separated by a blank line.
-- Use "- " bullets or "1. " numbered lists for lists, steps, or items.
-- Use **bold** for key terms, names, dates, and amounts where helpful.
-- No tables, no code blocks, no emojis.
-
-STRICT RULES:
-- Output ONLY English. Never include any Hindi/Devanagari text or transliteration.
-- Do NOT add any notes, disclaimers, comments, or remarks about handwriting, legibility, accuracy, uncertainty, the translation, or the files. No "Note:", no "[illegible]", no "[unclear]".
+${FORMAT_RULES}
 - Do not mention file numbers or page order in the document.
 
 Your reply must start with exactly one line in this form, giving the correct order of the file numbers:
@@ -249,15 +290,16 @@ Then a line with only ---
 Then the formatted English document, and nothing else.`;
 }
 
-async function callClaude(content, onText) {
+async function callClaude(content, onText, tools) {
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "x-api-key": CFG.apiKey, "anthropic-version": "2023-06-01",
-      "content-type": "application/json", "anthropic-dangerous-direct-browser-access": "true"
+      "content-type": "application/json", "anthropic-dangerous-direct-browser-access": "true",
+      ...(tools ? { "anthropic-beta": "web-fetch-2025-09-10" } : {})
     },
-    body: JSON.stringify({ model: CFG.model || "claude-sonnet-4-5", max_tokens: 32000, stream: true,
-      messages: [{ role: "user", content }] })
+    body: JSON.stringify(Object.assign({ model: CFG.model || "claude-sonnet-4-5", max_tokens: 32000, stream: true,
+      messages: [{ role: "user", content }] }, tools ? { tools } : {}))
   });
   if (!r.ok) { let m = "HTTP " + r.status; try { m = (await r.json()).error.message; } catch {} throw new Error(m); }
   const reader = r.body.getReader(), dec = new TextDecoder();
@@ -270,6 +312,10 @@ async function callClaude(content, onText) {
       const ev = buf.slice(0, k); buf = buf.slice(k + 2);
       const line = ev.split("\n").find(l => l.startsWith("data: ")); if (!line) continue;
       let d; try { d = JSON.parse(line.slice(6)); } catch { continue; }
+      if (d.type === "content_block_start" && d.content_block && /tool_result/.test(d.content_block.type)) {
+        if (d.content_block.content && d.content_block.content.type === "web_fetch_tool_error") throw new Error("Could not open that link (" + (d.content_block.content.error_code || "error") + ")");
+        text = ""; onText && onText(text, true);
+      }
       if (d.type === "content_block_delta" && d.delta.text) { text += d.delta.text; onText && onText(text); }
       if (d.type === "error") throw new Error(d.error.message);
     }
@@ -393,7 +439,37 @@ async function runAll() {
       order = (m[1].match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= batch.length);
       body = raw.slice(m[0].length).replace(/^\s*-{3,}\s*\n/, "");
     }
-    const md = cleanDoc(body);
+    showResult(card, cleanDoc(body), order, batch);
+  } catch (e) { showError(card, e); }
+}
+
+function showError(card, e) {
+  card.className = "res err";
+  card.innerHTML = "<h3>Error</h3>";
+  const t = document.createElement("div"); t.className = "txt"; t.textContent = e.message; card.appendChild(t);
+}
+
+async function runLink(url) {
+  const out = $("#results");
+  const card = document.createElement("div"); card.className = "res wait";
+  card.innerHTML = `<h3></h3><div class="txt">Opening the page…</div>`;
+  card.querySelector("h3").textContent = "Translating " + url;
+  out.prepend(card); card.scrollIntoView({ behavior: "smooth" });
+  try {
+    const raw = await callClaude([{ type: "text", text: linkPrompt(url) }], (t, fetched) => {
+      card.querySelector(".txt").textContent = fetched || t ? `Translating… ${t ? t.split(/\s+/).length : 0} words so far` : "Opening the page…";
+    }, [{ type: "web_fetch_20250910", name: "web_fetch", max_uses: 3, max_content_tokens: 60000 }]);
+    if (/FETCH_FAILED/.test(raw) && raw.length < 200) throw new Error("Could not open that link. Check it and try again.");
+    const i = raw.search(/^#\s/m);
+    const md = cleanDoc(i > 0 ? raw.slice(i) : raw);
+    if (!md) throw new Error("No content found on that page.");
+    showResult(card, md, [], []);
+    $("#link").value = "";
+  } catch (e) { showError(card, e); }
+}
+
+function showResult(card, md, order, batch) {
+  {
     const blob = makePdf(md);
     const url = URL.createObjectURL(blob);
     const titleM = md.match(/^#\s+(.+)/m);
@@ -413,10 +489,6 @@ async function runAll() {
     c.onclick = () => { navigator.clipboard.writeText(md.replace(/\*\*/g, "").replace(/^#+\s*/gm, "")); c.textContent = "Copied ✓"; setTimeout(() => c.textContent = "Copy text", 1500); };
     acts.append(c); card.appendChild(acts);
     a.scrollIntoView({ behavior: "smooth", block: "center" });
-  } catch (e) {
-    card.className = "res err";
-    card.innerHTML = "<h3>Error</h3>";
-    const t = document.createElement("div"); t.className = "txt"; t.textContent = e.message; card.appendChild(t);
   }
 }
 </script>
