@@ -69,6 +69,15 @@
   .res.wait { border-left-color: #f5a400; }
   .res .acts { margin-top: 18px; display: flex; gap: 12px; flex-wrap: wrap; }
   .res .acts button { font-size: 24px; padding: 14px 24px; border-radius: 14px; border: none; background: #eee; cursor: pointer; }
+  .dl {
+    display: block; text-align: center; font-size: 40px; font-weight: 800; padding: 34px; margin: 10px 0 20px;
+    background: #15a34a; color: #fff; border-radius: 24px; text-decoration: none;
+  }
+  .dl:hover { background: #128a3f; }
+  .order { font-size: 22px; color: #555; margin-bottom: 18px; }
+  .preview { font-size: 24px; border-top: 2px solid #eee; padding-top: 16px; max-height: 600px; overflow: auto; }
+  .preview h2 { font-size: 34px; margin: 10px 0; } .preview h4 { font-size: 28px; margin: 18px 0 8px; }
+  .preview p { margin: 0 0 14px; }
   #overlay {
     position: fixed; inset: 0; background: rgba(31,94,255,.88); color: #fff; z-index: 40;
     display: none; align-items: center; justify-content: center; font-size: 72px; font-weight: 800;
@@ -116,6 +125,7 @@
   </div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="config.js"></script>
 <script>
 const CFG = window.TRANSLATOR_CONFIG || {};
@@ -190,62 +200,223 @@ $("#yes").onclick = () => { $("#confirm").style.display = "none"; runAll(); };
 
 const toB64 = f => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(r.result.split(",")[1]); r.onerror = bad; r.readAsDataURL(f); });
 
-function buildPrompt() {
-  const t = topicName();
-  const s = style === "verbatim"
-    ? "Translate VERBATIM: word-for-word and line-by-line, keeping the original structure, line breaks, numbering and every detail. Do not summarize, skip, or add anything."
-    : "Translate into natural, fluent, easy-to-read English. Keep the full meaning, but phrase it the way a native English speaker would.";
-  return `You are an expert Hindi-to-English translator. The topic of this material is: ${t}. Use correct ${t.toLowerCase()} terminology.\n${s}\nIf the content is an image or scan, read all Hindi (Devanagari) text in it, including handwriting. Text that is already English stays as-is. Output ONLY the English translation — no notes, no preamble. If there is no readable text, say "No text found."`;
+// Shrink big phone photos so many pages fit in one request
+async function imageBlock(f) {
+  try {
+    const bmp = await createImageBitmap(f);
+    const scale = Math.min(1, 2000 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+    const x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height);
+    x.drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise(r => c.toBlob(r, "image/jpeg", 0.88));
+    return { type: "image", source: { type: "base64", media_type: "image/jpeg", data: await toB64(blob) } };
+  } catch {
+    let type = f.type; if (!["image/jpeg","image/png","image/gif","image/webp"].includes(type)) type = "image/jpeg";
+    return { type: "image", source: { type: "base64", media_type: type, data: await toB64(f) } };
+  }
 }
 
-async function translate(f) {
-  const k = kind(f); let block;
-  if (k === "image") {
-    let type = f.type; if (!["image/jpeg","image/png","image/gif","image/webp"].includes(type)) type = "image/jpeg";
-    block = { type: "image", source: { type: "base64", media_type: type, data: await toB64(f) } };
-  } else if (k === "pdf") {
-    block = { type: "document", source: { type: "base64", media_type: "application/pdf", data: await toB64(f) } };
-  } else {
-    block = { type: "text", text: "Text to translate:\n\n" + await f.text() };
-  }
+function buildPrompt(n) {
+  const t = topicName();
+  const s = style === "verbatim"
+    ? "Translate VERBATIM: keep every sentence and detail, word-for-word in meaning. Do not summarize, shorten, skip, or add content."
+    : "Translate into natural, fluent, easy-to-read English. Keep the full meaning and every detail, but phrase it the way a native English speaker would.";
+  return `You are an expert Hindi-to-English translator. The topic of this material is: ${t}. Use correct terminology for that topic.
+
+You were given ${n} file(s), labeled FILE 1 to FILE ${n}. They are pages or parts of the material and are probably NOT in the right order. Work out the correct reading order from page numbers, dates, headings, sentences that continue across pages, numbering, and context.
+
+${s}
+
+Read all Hindi (Devanagari) text, including handwriting. If a word is hard to read, use your best judgment from context and keep going silently.
+
+FORMAT the English so it is easy to read and understand:
+- A short title as "# Title" at the top.
+- Use "## " section headings where the content has natural sections.
+- Short clear paragraphs separated by a blank line.
+- Use "- " bullets or "1. " numbered lists for lists, steps, or items.
+- Use **bold** for key terms, names, dates, and amounts where helpful.
+- No tables, no code blocks, no emojis.
+
+STRICT RULES:
+- Output ONLY English. Never include any Hindi/Devanagari text or transliteration.
+- Do NOT add any notes, disclaimers, comments, or remarks about handwriting, legibility, accuracy, uncertainty, the translation, or the files. No "Note:", no "[illegible]", no "[unclear]".
+- Do not mention file numbers or page order in the document.
+
+Your reply must start with exactly one line in this form, giving the correct order of the file numbers:
+ORDER: 3, 1, 2
+Then a line with only ---
+Then the formatted English document, and nothing else.`;
+}
+
+async function callClaude(content, onText) {
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "x-api-key": CFG.apiKey, "anthropic-version": "2023-06-01",
       "content-type": "application/json", "anthropic-dangerous-direct-browser-access": "true"
     },
-    body: JSON.stringify({ model: CFG.model || "claude-sonnet-4-5", max_tokens: 8000,
-      messages: [{ role: "user", content: [block, { type: "text", text: buildPrompt() }] }] })
+    body: JSON.stringify({ model: CFG.model || "claude-sonnet-4-5", max_tokens: 32000, stream: true,
+      messages: [{ role: "user", content }] })
   });
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error?.message || ("HTTP " + r.status));
-  return j.content.filter(c => c.type === "text").map(c => c.text).join("\n");
+  if (!r.ok) { let m = "HTTP " + r.status; try { m = (await r.json()).error.message; } catch {} throw new Error(m); }
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  let buf = "", text = "";
+  while (true) {
+    const { done, value } = await reader.read(); if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let k;
+    while ((k = buf.indexOf("\n\n")) >= 0) {
+      const ev = buf.slice(0, k); buf = buf.slice(k + 2);
+      const line = ev.split("\n").find(l => l.startsWith("data: ")); if (!line) continue;
+      let d; try { d = JSON.parse(line.slice(6)); } catch { continue; }
+      if (d.type === "content_block_delta" && d.delta.text) { text += d.delta.text; onText && onText(text); }
+      if (d.type === "error") throw new Error(d.error.message);
+    }
+  }
+  return text;
+}
+
+// Remove any notes/disclaimers and any Hindi characters that slip through
+function cleanDoc(md) {
+  return md.split("\n").filter(l => {
+    const t = l.replace(/[*_>\[\]()#\s]/g, " ").trim();
+    if (/^(note|notes|translator'?s? note|translation note|disclaimer|please note)\b/i.test(t)) return false;
+    if (/(handwriting|legib|illegib|transcription may|may contain inaccurac|unclear)/i.test(t) && /(note|may|due to|some words)/i.test(t)) return false;
+    return true;
+  }).join("\n")
+    .replace(/[\u0900-\u097F]+/g, "")
+    .replace(/\[(illegible|unclear)[^\]]*\]/gi, "")
+    .replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function pdfSafe(t) {
+  return t.replace(/[\u2018\u2019\u02BC]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/[\u2013\u2014\u2212]/g, "-")
+          .replace(/\u2026/g, "...").replace(/\u00A0/g, " ").replace(/[\u2022\u25CF]/g, "-").replace(/[^\x09\x0A\x0D\x20-\x7E\u00A1-\u00FF]/g, "");
+}
+
+function makePdf(md) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 60, maxW = W - 2 * M;
+  let y = M;
+  const need = h => { if (y + h > H - M) { doc.addPage(); y = M; } };
+  // Write words with **bold** support and word-wrap
+  function rich(text, size, baseBold, indent, lineH) {
+    const words = [];
+    pdfSafe(text).split("**").forEach((seg, i) => {
+      const b = baseBold || i % 2 === 1;
+      seg.split(/(\s+)/).forEach(w => { if (w && !/^\s+$/.test(w)) words.push({ w, b }); });
+    });
+    doc.setFontSize(size);
+    let x = M + indent; need(lineH);
+    const space = () => { doc.setFont("helvetica", "normal"); return doc.getTextWidth(" "); };
+    words.forEach((o, idx) => {
+      doc.setFont("helvetica", o.b ? "bold" : "normal");
+      const ww = doc.getTextWidth(o.w);
+      if (x > M + indent && x + ww > M + maxW) { y += lineH; need(lineH); x = M + indent; }
+      doc.setFont("helvetica", o.b ? "bold" : "normal");
+      doc.text(o.w, x, y);
+      x += ww + space();
+    });
+    y += lineH;
+  }
+  md.split("\n").forEach(raw => {
+    const line = raw.replace(/\s+$/, "");
+    let m;
+    if (!line.trim()) { y += 8; return; }
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) { need(20); doc.setDrawColor(190); doc.line(M, y, W - M, y); y += 18; return; }
+    if ((m = line.match(/^#\s+(.*)/))) { need(40); doc.setTextColor(20, 40, 90); rich(m[1].replace(/\*\*/g, ""), 22, true, 0, 28); doc.setTextColor(0); y += 8; return; }
+    if ((m = line.match(/^##\s+(.*)/))) { y += 8; need(34); doc.setTextColor(20, 40, 90); rich(m[1].replace(/\*\*/g, ""), 16, true, 0, 22); doc.setTextColor(0); y += 4; return; }
+    if ((m = line.match(/^#{3,}\s+(.*)/))) { y += 4; need(28); rich(m[1].replace(/\*\*/g, ""), 13.5, true, 0, 19); return; }
+    if ((m = line.match(/^(\s*)[-*+]\s+(.*)/))) {
+      const ind = 16 + Math.min(m[1].length, 8) * 4; need(18);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.text("-", M + ind - 12, y);
+      rich(m[2], 12, false, ind, 17); y += 2; return;
+    }
+    if ((m = line.match(/^(\s*)(\d+[.)])\s+(.*)/))) {
+      const ind = 24 + Math.min(m[1].length, 8) * 4; need(18);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.text(m[2], M + ind - 22, y);
+      rich(m[3], 12, false, ind, 17); y += 2; return;
+    }
+    rich(line.replace(/^>\s?/, ""), 12, false, 0, 17); y += 2;
+  });
+  const n = doc.getNumberOfPages();
+  for (let p = 1; p <= n; p++) {
+    doc.setPage(p); doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(140);
+    doc.text(`Page ${p} of ${n}`, W / 2, H - 28, { align: "center" });
+  }
+  return doc.output("blob");
+}
+
+function mdToHtml(md) {
+  const esc = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+  let html = "", list = null;
+  const close = () => { if (list) { html += `</${list}>`; list = null; } };
+  md.split("\n").forEach(l => {
+    let m;
+    if ((m = l.match(/^#\s+(.*)/))) { close(); html += `<h2>${esc(m[1])}</h2>`; }
+    else if ((m = l.match(/^#{2,}\s+(.*)/))) { close(); html += `<h4>${esc(m[1])}</h4>`; }
+    else if ((m = l.match(/^\s*[-*+]\s+(.*)/))) { if (list !== "ul") { close(); html += "<ul>"; list = "ul"; } html += `<li>${esc(m[1])}</li>`; }
+    else if ((m = l.match(/^\s*\d+[.)]\s+(.*)/))) { if (list !== "ol") { close(); html += "<ol>"; list = "ol"; } html += `<li>${esc(m[1])}</li>`; }
+    else if (/^-{3,}$/.test(l.trim())) { close(); html += "<hr>"; }
+    else if (l.trim()) { close(); html += `<p>${esc(l)}</p>`; }
+  });
+  close(); return html;
 }
 
 async function runAll() {
   const batch = files.slice(); files = []; renderFiles();
   const out = $("#results");
-  out.scrollIntoView({ behavior: "smooth" });
-  await Promise.all(batch.map(async f => {
-    const card = document.createElement("div"); card.className = "res wait";
-    card.innerHTML = `<h3></h3><div class="txt">Translating…</div>`;
-    card.querySelector("h3").textContent = f.name;
-    out.prepend(card);
-    try {
-      const text = await translate(f);
-      card.className = "res";
-      card.querySelector(".txt").textContent = text;
-      const a = document.createElement("div"); a.className = "acts";
-      const c = document.createElement("button"); c.textContent = "Copy";
-      c.onclick = () => { navigator.clipboard.writeText(text); c.textContent = "Copied ✓"; setTimeout(() => c.textContent = "Copy", 1500); };
-      const d = document.createElement("button"); d.textContent = "Download";
-      d.onclick = () => { const l = document.createElement("a"); l.href = URL.createObjectURL(new Blob([text], { type: "text/plain" })); l.download = f.name.replace(/\.[^.]+$/, "") + "_English.txt"; l.click(); };
-      a.append(c, d); card.appendChild(a);
-    } catch (e) {
-      card.className = "res err";
-      card.querySelector(".txt").textContent = "Error: " + e.message;
+  const card = document.createElement("div"); card.className = "res wait";
+  card.innerHTML = `<h3>Translating ${batch.length} file${batch.length > 1 ? "s" : ""}…</h3><div class="txt">Reading the pages…</div>`;
+  out.prepend(card);
+  card.scrollIntoView({ behavior: "smooth" });
+  try {
+    const content = [];
+    for (let i = 0; i < batch.length; i++) {
+      const f = batch[i], k = kind(f);
+      content.push({ type: "text", text: `FILE ${i + 1} (${f.name}):` });
+      if (k === "image") content.push(await imageBlock(f));
+      else if (k === "pdf") content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: await toB64(f) } });
+      else content.push({ type: "text", text: await f.text() });
     }
-  }));
+    content.push({ type: "text", text: buildPrompt(batch.length) });
+    const raw = await callClaude(content, t => {
+      const words = t.split(/\s+/).length;
+      card.querySelector(".txt").textContent = `Translating… ${words} words so far`;
+    });
+    let order = [], body = raw;
+    const m = raw.match(/^\s*ORDER:\s*([^\n]*)\n/i);
+    if (m) {
+      order = (m[1].match(/\d+/g) || []).map(Number).filter(n => n >= 1 && n <= batch.length);
+      body = raw.slice(m[0].length).replace(/^\s*-{3,}\s*\n/, "");
+    }
+    const md = cleanDoc(body);
+    const blob = makePdf(md);
+    const url = URL.createObjectURL(blob);
+    const titleM = md.match(/^#\s+(.+)/m);
+    const fname = (titleM ? pdfSafe(titleM[1]).replace(/\*\*/g, "").replace(/[^\w\- ]+/g, "").trim().slice(0, 60) : "Translation") .replace(/\s+/g, "_") + "_English.pdf";
+    card.className = "res";
+    card.innerHTML = "";
+    const h = document.createElement("h3"); h.textContent = "Done ✓"; card.appendChild(h);
+    const a = document.createElement("a"); a.className = "dl"; a.href = url; a.download = fname; a.textContent = "⬇ Download English PDF"; card.appendChild(a);
+    if (order.length && batch.length > 1) {
+      const o = document.createElement("div"); o.className = "order";
+      o.textContent = "Page order found: " + order.map((n, i) => `${i + 1}. ${batch[n - 1].name}`).join("   ");
+      card.appendChild(o);
+    }
+    const prev = document.createElement("div"); prev.className = "preview"; prev.innerHTML = mdToHtml(md); card.appendChild(prev);
+    const acts = document.createElement("div"); acts.className = "acts";
+    const c = document.createElement("button"); c.textContent = "Copy text";
+    c.onclick = () => { navigator.clipboard.writeText(md.replace(/\*\*/g, "").replace(/^#+\s*/gm, "")); c.textContent = "Copied ✓"; setTimeout(() => c.textContent = "Copy text", 1500); };
+    acts.append(c); card.appendChild(acts);
+    a.scrollIntoView({ behavior: "smooth", block: "center" });
+  } catch (e) {
+    card.className = "res err";
+    card.innerHTML = "<h3>Error</h3>";
+    const t = document.createElement("div"); t.className = "txt"; t.textContent = e.message; card.appendChild(t);
+  }
 }
 </script>
 </body>
